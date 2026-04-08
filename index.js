@@ -9,7 +9,7 @@ const RSS_URL = "https://rsshub.app/twitter/user/Nodz_io";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
 
 // --- ROADMAP ---
-const ROADMAP_URL = "https://raw.githubusercontent.com/Nodz-io/telegram-x-bot/main/ROADMAP.md";
+const ROADMAP_URL = "https://raw.githubusercontent.com/Valrob28/telegram-x-bot/main/ROADMAP.md";
 
 // --- Fichiers locaux ---
 const TWEETS_FILE = "tweets.json";
@@ -128,7 +128,7 @@ async function processRoadmap() {
   const hash = hashString(roadmap);
   const prevHash = fs.existsSync(ROADMAP_HASH_FILE) ? fs.readFileSync(ROADMAP_HASH_FILE, "utf8") : "";
   if (hash !== prevHash) {
-    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: https://github.com/Nodz-io/telegram-x-bot`);
+    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: https://github.com/Valrob28/telegram-x-bot`);
     fs.writeFileSync(ROADMAP_HASH_FILE, hash);
     console.log("Roadmap sent");
   } else {
