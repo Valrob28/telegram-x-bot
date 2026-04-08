@@ -1,8 +1,10 @@
 import fs from "fs";
 import fetch from "node-fetch";
 
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN?.trim();
+const CHAT_ID_RAW = process.env.CHAT_ID?.trim();
+const CHAT_ID =
+  CHAT_ID_RAW && /^-?\d+$/.test(CHAT_ID_RAW) ? Number(CHAT_ID_RAW) : CHAT_ID_RAW;
 
 // --- X à suivre : https://x.com/Nodz_io — notifications à partir du 25 mars 2026 ---
 const RSS_URL = "https://rsshub.app/twitter/user/Nodz_io";
@@ -26,12 +28,21 @@ function saveTweets(tweets) {
 }
 
 async function sendTelegram(message) {
+  if (!TELEGRAM_TOKEN || CHAT_ID === undefined || CHAT_ID === "") {
+    throw new Error("Missing TELEGRAM_TOKEN or CHAT_ID");
+  }
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-  await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: CHAT_ID, text: message })
   });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) {
+    console.error("Telegram sendMessage failed:", JSON.stringify(data));
+    throw new Error(data.description || `Telegram API error HTTP ${res.status}`);
+  }
+  console.log("Telegram OK, message_id:", data.result?.message_id);
 }
 
 // ========== TWEETS ==========
@@ -86,7 +97,8 @@ ${insight}
 async function processTweets() {
   const tweets = loadTweets();
   const latest = await getLatestTweet();
-  if (!latest) return console.log("No tweet found");
+  if (!latest) return console.log("No tweet found (RSS vide ou format inattendu)");
+  console.log("Latest tweet id from RSS:", latest.id, "date:", latest.date);
   const exists = tweets.find(t => t.id === latest.id);
   if (!exists) {
     const tweetTime = new Date(latest.date);
@@ -102,7 +114,7 @@ async function processTweets() {
     saveTweets(tweets);
     console.log("New tweet sent");
   } else {
-    console.log("Already processed");
+    console.log("Already processed (aucun nouvel envoi Telegram pour ce tweet)");
   }
 }
 
@@ -138,8 +150,17 @@ async function processRoadmap() {
 
 // ========== MAIN ==========
 async function main() {
+  console.log(
+    "Env: TELEGRAM_TOKEN=",
+    TELEGRAM_TOKEN ? "set" : "MISSING",
+    "CHAT_ID=",
+    CHAT_ID !== undefined && CHAT_ID !== "" ? "set" : "MISSING"
+  );
   await processTweets();
   await processRoadmap();
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
