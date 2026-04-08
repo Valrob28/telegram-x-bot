@@ -17,6 +17,8 @@ const ROADMAP_URL = "https://raw.githubusercontent.com/Valrob28/telegram-x-bot/m
 // --- Fichiers locaux ---
 const TWEETS_FILE = "tweets.json";
 const ROADMAP_HASH_FILE = "roadmap_hash.txt";
+/** Dernier message roadmap épinglé (pour le remplacer au prochain envoi). */
+const ROADMAP_PIN_ID_FILE = "roadmap_pin_id.txt";
 
 function repoWebUrl() {
   const gh = process.env.GITHUB_REPOSITORY;
@@ -74,7 +76,45 @@ async function sendTelegram(message, opts = {}) {
     console.error("Telegram sendMessage failed:", JSON.stringify(data));
     throw new Error(data.description || `Telegram API error HTTP ${res.status}`);
   }
-  console.log("Telegram OK, message_id:", data.result?.message_id);
+  const mid = data.result?.message_id;
+  console.log("Telegram OK, message_id:", mid);
+  return mid;
+}
+
+function pinRoadmapEnabled() {
+  const v = (process.env.PIN_ROADMAP || "").toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+async function telegramApi(method, extra = {}) {
+  if (!TELEGRAM_TOKEN || CHAT_ID === undefined || CHAT_ID === "") {
+    throw new Error("Missing TELEGRAM_TOKEN or CHAT_ID");
+  }
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CHAT_ID, ...extra })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) {
+    throw new Error(data.description || `${method} failed`);
+  }
+  return data;
+}
+
+/** Épingle le message (le bot doit être admin avec « épingler les messages »). */
+async function pinRoadmapMessage(messageId) {
+  await telegramApi("pinChatMessage", {
+    message_id: messageId,
+    disable_notification: true
+  });
+  console.log("Roadmap épinglée, message_id:", messageId);
+}
+
+async function unpinRoadmapMessage(messageId) {
+  await telegramApi("unpinChatMessage", { message_id: messageId });
+  console.log("Ancienne roadmap désépinglée, message_id:", messageId);
 }
 
 // ========== TWEETS ==========
@@ -197,12 +237,34 @@ async function processRoadmap() {
     if (body.length > budget) {
       body = body.slice(0, Math.max(0, budget - 20)) + "\n…";
     }
-    await sendTelegram(header + body + footer, {
+    const messageId = await sendTelegram(header + body + footer, {
       parse_mode: "HTML",
       disable_web_page_preview: false
     });
     fs.writeFileSync(ROADMAP_HASH_FILE, hash);
     console.log("Roadmap sent");
+
+    if (pinRoadmapEnabled() && messageId != null) {
+      try {
+        if (fs.existsSync(ROADMAP_PIN_ID_FILE)) {
+          const old = parseInt(fs.readFileSync(ROADMAP_PIN_ID_FILE, "utf8").trim(), 10);
+          if (!Number.isNaN(old)) {
+            try {
+              await unpinRoadmapMessage(old);
+            } catch (e) {
+              console.log("Désépinglage ignoré:", e.message || e);
+            }
+          }
+        }
+        await pinRoadmapMessage(messageId);
+        fs.writeFileSync(ROADMAP_PIN_ID_FILE, String(messageId));
+      } catch (e) {
+        console.error(
+          "Épinglage impossible — mets le bot admin avec « Épingler les messages » :",
+          e.message || e
+        );
+      }
+    }
   } else {
     console.log("Roadmap unchanged");
   }
@@ -214,7 +276,9 @@ async function main() {
     "Env: TELEGRAM_TOKEN=",
     TELEGRAM_TOKEN ? "set" : "MISSING",
     "CHAT_ID=",
-    CHAT_ID !== undefined && CHAT_ID !== "" ? "set" : "MISSING"
+    CHAT_ID !== undefined && CHAT_ID !== "" ? "set" : "MISSING",
+    "PIN_ROADMAP=",
+    pinRoadmapEnabled() ? "on" : "off"
   );
   await processTweets();
   await processRoadmap();
