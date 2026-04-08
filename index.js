@@ -23,6 +23,16 @@ function repoWebUrl() {
   return gh ? `https://github.com/${gh}` : "https://github.com/Valrob28/telegram-x-bot";
 }
 
+/** Telegram HTML : seuls &, <, > à échapper dans le corps. */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+const TELEGRAM_MAX_MESSAGE = 4096;
+
 // ========== UTILS ==========
 function loadTweets() {
   if (!fs.existsSync(TWEETS_FILE)) return [];
@@ -33,15 +43,31 @@ function saveTweets(tweets) {
   fs.writeFileSync(TWEETS_FILE, JSON.stringify(tweets, null, 2));
 }
 
-async function sendTelegram(message) {
+/**
+ * @param {string} message
+ * @param {{ parse_mode?: "HTML"; disable_web_page_preview?: boolean }} [opts]
+ */
+async function sendTelegram(message, opts = {}) {
   if (!TELEGRAM_TOKEN || CHAT_ID === undefined || CHAT_ID === "") {
     throw new Error("Missing TELEGRAM_TOKEN or CHAT_ID");
   }
+  if (message.length > TELEGRAM_MAX_MESSAGE) {
+    message =
+      message.slice(0, TELEGRAM_MAX_MESSAGE - 40) + "\n\n<i>… (message tronqué, limite Telegram)</i>";
+  }
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const body = {
+    chat_id: CHAT_ID,
+    text: message,
+    ...(opts.parse_mode && { parse_mode: opts.parse_mode }),
+    ...(opts.disable_web_page_preview !== undefined && {
+      disable_web_page_preview: opts.disable_web_page_preview
+    })
+  };
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: CHAT_ID, text: message })
+    body: JSON.stringify(body)
   });
   const data = await res.json().catch(() => ({}));
   if (!data.ok) {
@@ -78,26 +104,22 @@ function computeInsight(tweet, tweets) {
   return "🧊 Slow start";
 }
 
-function formatTweetMessage(tweet, insight) {
-  return `🟣 NODZ // CONTENT PIPELINE
-
-New signal detected on X:
-
-"${tweet.text}"
-
-🔗 ${tweet.url}
-
-━━━━━━━━━━━━━━━
-
-📊 Metrics
-❤️ ${tweet.likes}
-🔁 ${tweet.retweets}
-👁️ ${tweet.views}
-
-🧠 Insight
-${insight}
-
-— powered by NODZ monitoring`;
+function formatTweetMessageHtml(tweet, insight) {
+  const t = escapeHtml(tweet.text);
+  const u = escapeHtml(tweet.url);
+  const ins = escapeHtml(insight);
+  return (
+    `<b>🟣 NODZ // CONTENT PIPELINE</b>\n\n` +
+    `<b>Nouveau signal sur X</b>\n` +
+    `<blockquote>${t}</blockquote>\n` +
+    `🔗 <a href="${u}">Ouvrir le tweet</a>\n\n` +
+    `━━━━━━━━━━━━━━━\n\n` +
+    `<b>📊 Métriques</b>\n` +
+    `❤️ ${tweet.likes} · 🔁 ${tweet.retweets} · 👁️ ${tweet.views}\n\n` +
+    `<b>🧠 Insight</b>\n` +
+    `${ins}\n\n` +
+    `<i>— NODZ monitoring</i>`
+  );
 }
 
 async function processTweets() {
@@ -115,7 +137,10 @@ async function processTweets() {
       return;
     }
     const insight = computeInsight(latest, tweets);
-    await sendTelegram(formatTweetMessage(latest, insight));
+    await sendTelegram(formatTweetMessageHtml(latest, insight), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    });
     tweets.push(latest);
     saveTweets(tweets);
     console.log("New tweet sent");
@@ -164,7 +189,18 @@ async function processRoadmap() {
   const prevHash = fs.existsSync(ROADMAP_HASH_FILE) ? fs.readFileSync(ROADMAP_HASH_FILE, "utf8") : "";
   if (hash !== prevHash) {
     const web = repoWebUrl();
-    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: ${web}`);
+    const safeWeb = escapeHtml(web);
+    let body = escapeHtml(roadmap);
+    const header = `🗓️ <b>NODZ ROADMAP UPDATED</b>\n\n<pre>`;
+    const footer = `</pre>\n\n<a href="${safeWeb}">📎 Voir le dépôt sur GitHub</a>`;
+    const budget = TELEGRAM_MAX_MESSAGE - header.length - footer.length - 80;
+    if (body.length > budget) {
+      body = body.slice(0, Math.max(0, budget - 20)) + "\n…";
+    }
+    await sendTelegram(header + body + footer, {
+      parse_mode: "HTML",
+      disable_web_page_preview: false
+    });
     fs.writeFileSync(ROADMAP_HASH_FILE, hash);
     console.log("Roadmap sent");
   } else {
