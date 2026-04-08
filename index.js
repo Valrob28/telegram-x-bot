@@ -1,0 +1,145 @@
+import fs from "fs";
+import fetch from "node-fetch";
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
+
+// --- X à suivre : https://x.com/Nodz_io — notifications à partir du 25 mars 2026 ---
+const RSS_URL = "https://rsshub.app/twitter/user/Nodz_io";
+const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
+
+// --- ROADMAP ---
+const ROADMAP_URL = "https://raw.githubusercontent.com/Nodz-io/telegram-x-bot/main/ROADMAP.md";
+
+// --- Fichiers locaux ---
+const TWEETS_FILE = "tweets.json";
+const ROADMAP_HASH_FILE = "roadmap_hash.txt";
+
+// ========== UTILS ==========
+function loadTweets() {
+  if (!fs.existsSync(TWEETS_FILE)) return [];
+  return JSON.parse(fs.readFileSync(TWEETS_FILE));
+}
+
+function saveTweets(tweets) {
+  fs.writeFileSync(TWEETS_FILE, JSON.stringify(tweets, null, 2));
+}
+
+async function sendTelegram(message) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CHAT_ID, text: message })
+  });
+}
+
+// ========== TWEETS ==========
+async function getLatestTweet() {
+  const res = await fetch(RSS_URL);
+  const text = await res.text();
+  const matchItem = text.match(/<item>([\s\S]*?)<\/item>/);
+  if (!matchItem) return null;
+  const item = matchItem[1];
+
+  const title = item.match(/<title>(.*?)<\/title>/)?.[1] || "";
+  const link = item.match(/<link>(.*?)<\/link>/)?.[1] || "";
+  const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] || "";
+  const idMatch = link.match(/status\/(\d+)/);
+  const id = idMatch ? idMatch[1] : Date.now().toString();
+
+  return { id, text: title, url: link, date: new Date(pubDate).toISOString(), likes: 0, retweets: 0, views: 0 };
+}
+
+function computeInsight(tweet, tweets) {
+  if (tweets.length === 0) return "🆕 First tweet tracked";
+  const avgLikes = tweets.reduce((sum, t) => sum + (t.likes || 0), 0) / tweets.length;
+  if (avgLikes === 0) return "🧊 No data yet";
+  const score = tweet.likes / avgLikes;
+  if (score > 2) return "🚀 This tweet is outperforming hard";
+  if (score > 1.2) return "⚡ Strong engagement";
+  return "🧊 Slow start";
+}
+
+function formatTweetMessage(tweet, insight) {
+  return `🟣 NODZ // CONTENT PIPELINE
+
+New signal detected on X:
+
+"${tweet.text}"
+
+🔗 ${tweet.url}
+
+━━━━━━━━━━━━━━━
+
+📊 Metrics
+❤️ ${tweet.likes}
+🔁 ${tweet.retweets}
+👁️ ${tweet.views}
+
+🧠 Insight
+${insight}
+
+— powered by NODZ monitoring`;
+}
+
+async function processTweets() {
+  const tweets = loadTweets();
+  const latest = await getLatestTweet();
+  if (!latest) return console.log("No tweet found");
+  const exists = tweets.find(t => t.id === latest.id);
+  if (!exists) {
+    const tweetTime = new Date(latest.date);
+    if (Number.isNaN(tweetTime.getTime()) || tweetTime < MONITOR_SINCE) {
+      tweets.push(latest);
+      saveTweets(tweets);
+      console.log("Tweet before monitor window, tracked without notify");
+      return;
+    }
+    const insight = computeInsight(latest, tweets);
+    await sendTelegram(formatTweetMessage(latest, insight));
+    tweets.push(latest);
+    saveTweets(tweets);
+    console.log("New tweet sent");
+  } else {
+    console.log("Already processed");
+  }
+}
+
+// ========== ROADMAP ==========
+async function fetchRoadmap() {
+  const res = await fetch(ROADMAP_URL);
+  return await res.text();
+}
+
+function hashString(str) {
+  let hash = 0, i, chr;
+  if (str.length === 0) return hash;
+  for (i = 0; i < str.length; i++) {
+    chr = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + chr;
+    hash |= 0;
+  }
+  return hash.toString();
+}
+
+async function processRoadmap() {
+  const roadmap = await fetchRoadmap();
+  const hash = hashString(roadmap);
+  const prevHash = fs.existsSync(ROADMAP_HASH_FILE) ? fs.readFileSync(ROADMAP_HASH_FILE, "utf8") : "";
+  if (hash !== prevHash) {
+    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: https://github.com/Nodz-io/telegram-x-bot`);
+    fs.writeFileSync(ROADMAP_HASH_FILE, hash);
+    console.log("Roadmap sent");
+  } else {
+    console.log("Roadmap unchanged");
+  }
+}
+
+// ========== MAIN ==========
+async function main() {
+  await processTweets();
+  await processRoadmap();
+}
+
+main();
