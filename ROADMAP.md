@@ -9,8 +9,3 @@
 - Push replies & quotes
 - Final reward
 🎁 Giveaway : Oui
-
-## Suggestions & Feedback de l’équipe
-- [ ] Proposition 1 : ...
-- [ ] Proposition 2 : ...
-- [ ] Vote : Bon / Pas bon / À modifier
