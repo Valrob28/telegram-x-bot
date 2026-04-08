@@ -10,12 +10,18 @@ const CHAT_ID =
 const RSS_URL = "https://rsshub.app/twitter/user/Nodz_io";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
 
-// --- ROADMAP ---
+// --- ROADMAP (fichier local en CI = toujours à jour après checkout ; fallback raw GitHub en local sans clone) ---
+const ROADMAP_FILE = "ROADMAP.md";
 const ROADMAP_URL = "https://raw.githubusercontent.com/Valrob28/telegram-x-bot/main/ROADMAP.md";
 
 // --- Fichiers locaux ---
 const TWEETS_FILE = "tweets.json";
 const ROADMAP_HASH_FILE = "roadmap_hash.txt";
+
+function repoWebUrl() {
+  const gh = process.env.GITHUB_REPOSITORY;
+  return gh ? `https://github.com/${gh}` : "https://github.com/Valrob28/telegram-x-bot";
+}
 
 // ========== UTILS ==========
 function loadTweets() {
@@ -119,9 +125,17 @@ async function processTweets() {
 }
 
 // ========== ROADMAP ==========
-async function fetchRoadmap() {
+async function loadRoadmapText() {
+  if (fs.existsSync(ROADMAP_FILE)) {
+    return fs.readFileSync(ROADMAP_FILE, "utf8");
+  }
   const res = await fetch(ROADMAP_URL);
-  return await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ROADMAP inaccessible (${res.status}): ${ROADMAP_URL} — vérifie que le repo est public ou ajoute ${ROADMAP_FILE} localement.`
+    );
+  }
+  return res.text();
 }
 
 function hashString(str) {
@@ -136,11 +150,21 @@ function hashString(str) {
 }
 
 async function processRoadmap() {
-  const roadmap = await fetchRoadmap();
+  let roadmap;
+  try {
+    roadmap = await loadRoadmapText();
+  } catch (e) {
+    console.error(e.message || e);
+    throw e;
+  }
+  if (roadmap.trim().startsWith("404:")) {
+    throw new Error("Contenu roadmap invalide (404) — utiliser ROADMAP.md en local ou corriger l’URL.");
+  }
   const hash = hashString(roadmap);
   const prevHash = fs.existsSync(ROADMAP_HASH_FILE) ? fs.readFileSync(ROADMAP_HASH_FILE, "utf8") : "";
   if (hash !== prevHash) {
-    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: https://github.com/Valrob28/telegram-x-bot`);
+    const web = repoWebUrl();
+    await sendTelegram(`🗓️ NODZ ROADMAP UPDATED\n\n${roadmap}\n\nCheck GitHub for details: ${web}`);
     fs.writeFileSync(ROADMAP_HASH_FILE, hash);
     console.log("Roadmap sent");
   } else {
