@@ -7,8 +7,9 @@ const CHAT_ID =
   CHAT_ID_RAW && /^-?\d+$/.test(CHAT_ID_RAW) ? Number(CHAT_ID_RAW) : CHAT_ID_RAW;
 
 // --- X à suivre : https://x.com/Nodz_io — notifications à partir du 25 mars 2026 ---
-// RSS_URL : en prod, surcharges via secret GitHub « RSS_URL ». L’instance publique
-// rsshub.app redirige souvent /twitter/user/* vers une 404 → flux vide sans instance perso.
+// RSS_URL (secret GitHub) : ex. RSSHub self-hosted, ou Nitter https://TON_INSTANCE/Nodz_io/rss
+// (les instances Nitter publiques sont souvent derrière Cloudflare → inutilisables depuis les CI).
+// Défaut rsshub.app/twitter : souvent une 404 publique pour Twitter.
 const RSS_URL =
   process.env.RSS_URL?.trim() || "https://rsshub.app/twitter/user/Nodz_io";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
@@ -121,6 +122,55 @@ async function unpinRoadmapMessage(messageId) {
 }
 
 // ========== TWEETS ==========
+function stripCdata(s) {
+  return String(s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim();
+}
+
+function itemToTweet(titleRaw, linkRaw, dateRaw) {
+  const title = stripCdata(titleRaw);
+  const link = stripCdata(linkRaw).trim();
+  const pubDate = stripCdata(dateRaw);
+  const idMatch = link.match(/status\/(\d+)/);
+  const id = idMatch ? idMatch[1] : Date.now().toString();
+  const date = pubDate ? new Date(pubDate) : new Date();
+  const iso = Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+  return { id, text: title, url: link, date: iso, likes: 0, retweets: 0, views: 0 };
+}
+
+/** Premier <item> (RSS 2.0, ex. Nitter en RSS). */
+function parseFirstRssItem(xml) {
+  const m = xml.match(/<item>([\s\S]*?)<\/item>/);
+  if (!m) return null;
+  const item = m[1];
+  const title = item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "";
+  const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || "";
+  const pubDate =
+    item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ||
+    item.match(/<dc:date>([\s\S]*?)<\/dc:date>/)?.[1] ||
+    "";
+  if (!link && !title) return null;
+  return itemToTweet(title, link, pubDate);
+}
+
+/** Premier <entry> (Atom, certains agrégateurs / variantes). */
+function parseFirstAtomEntry(xml) {
+  const m = xml.match(/<entry>([\s\S]*?)<\/entry>/);
+  if (!m) return null;
+  const entry = m[1];
+  const title = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1] || "";
+  let link =
+    entry.match(/<link[^>]+href="([^"]+)"[^>]*\/>/)?.[1] ||
+    entry.match(/<link[^>]+href="([^"]+)"[^>]*>/)?.[1] ||
+    entry.match(/<link>([\s\S]*?)<\/link>/)?.[1] ||
+    "";
+  const pub =
+    entry.match(/<published>([\s\S]*?)<\/published>/)?.[1] ||
+    entry.match(/<updated>([\s\S]*?)<\/updated>/)?.[1] ||
+    "";
+  if (!link && !title) return null;
+  return itemToTweet(title, link, pub);
+}
+
 async function getLatestTweet() {
   const res = await fetch(RSS_URL, {
     headers: {
@@ -134,26 +184,21 @@ async function getLatestTweet() {
   const ct = (res.headers.get("content-type") || "").toLowerCase();
   console.log("RSS:", res.status, res.statusText, "type:", ct || "?", "len:", text.length);
 
-  const matchItem = text.match(/<item>([\s\S]*?)<\/item>/);
-  if (!matchItem) {
-    const flat = text.slice(0, 350).replace(/\s+/g, " ");
-    console.log(
-      "Pas de <item> dans la réponse — souvent rsshub.app public = 404 pour Twitter. " +
-        "Configure le secret GitHub RSS_URL (instance RSSHub avec cookies X, ou autre flux RSS valide). " +
-        "Aperçu:",
-      flat
-    );
-    return null;
-  }
-  const item = matchItem[1];
+  const fromRss = parseFirstRssItem(text);
+  if (fromRss) return fromRss;
+  const fromAtom = parseFirstAtomEntry(text);
+  if (fromAtom) return fromAtom;
 
-  const title = item.match(/<title>(.*?)<\/title>/)?.[1] || "";
-  const link = item.match(/<link>(.*?)<\/link>/)?.[1] || "";
-  const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] || "";
-  const idMatch = link.match(/status\/(\d+)/);
-  const id = idMatch ? idMatch[1] : Date.now().toString();
-
-  return { id, text: title, url: link, date: new Date(pubDate).toISOString(), likes: 0, retweets: 0, views: 0 };
+  const flat = text.slice(0, 350).replace(/\s+/g, " ");
+  console.log(
+    "Pas de flux RSS/Atom exploitable (<item> ou <entry>). " +
+      "rsshub.app/public et beaucoup d’instances Nitter renvoient 404 ou du HTML (Cloudflare). " +
+      "Utilise une RSS_URL qui répond en XML depuis le runner (RSSHub perso, proxy, etc.). " +
+      "Nitter théorique : https://INSTANCE/Nodz_io/rss pour https://x.com/Nodz_io — " +
+      "Aperçu:",
+    flat
+  );
+  return null;
 }
 
 function computeInsight(tweet, tweets) {
