@@ -13,6 +13,24 @@ const RSS_URL =
   process.env.RSS_URL?.trim() || "https://nitter.net/Nodz_io/rss";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
 
+/** Base Nitter pour le lien « Ouvrir le tweet » (secret NITTER_BASE_URL ou déduit de RSS_URL). */
+function getNitterBase() {
+  const fromEnv = process.env.NITTER_BASE_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  try {
+    const u = new URL(RSS_URL);
+    if (/nitter\./i.test(u.hostname)) {
+      return `${u.protocol}//${u.hostname}`.replace(/\/$/, "");
+    }
+  } catch {
+    /* ignore */
+  }
+  return "https://nitter.net";
+}
+
+const preferXLink = () =>
+  ["1", "true", "yes"].includes((process.env.TWEET_LINK_PREFER_X || "").toLowerCase());
+
 // --- ROADMAP (fichier local en CI = toujours à jour après checkout ; fallback raw GitHub en local sans clone) ---
 const ROADMAP_FILE = "ROADMAP.md";
 const ROADMAP_URL = "https://raw.githubusercontent.com/Valrob28/telegram-x-bot/main/ROADMAP.md";
@@ -177,8 +195,8 @@ function stripCdata(s) {
   return String(s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim();
 }
 
-/** Affiche x.com dans Telegram même si le flux vient de nitter.* */
-function toPublicXUrl(link) {
+/** Lien cliquable dans Telegram : Nitter par défaut, ou x.com si TWEET_LINK_PREFER_X=1. */
+function toDisplayTweetUrl(link) {
   const s = String(link).split("#")[0];
   const idM = s.match(/status\/(\d+)/);
   if (!idM) return link;
@@ -187,7 +205,8 @@ function toPublicXUrl(link) {
     s.match(/x\.com\/([^/]+)\/status/)?.[1] ||
     s.match(/twitter\.com\/([^/]+)\/status/)?.[1] ||
     "Nodz_io";
-  return `https://x.com/${h}/status/${idM[1]}`;
+  if (preferXLink()) return `https://x.com/${h}/status/${idM[1]}`;
+  return `${getNitterBase()}/${h}/status/${idM[1]}`;
 }
 
 function itemToTweet(titleRaw, linkRaw, dateRaw) {
@@ -198,7 +217,7 @@ function itemToTweet(titleRaw, linkRaw, dateRaw) {
   const id = idMatch ? idMatch[1] : Date.now().toString();
   const date = pubDate ? new Date(pubDate) : new Date();
   const iso = Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
-  const url = linkRawTrim ? toPublicXUrl(linkRawTrim) : "";
+  const url = linkRawTrim ? toDisplayTweetUrl(linkRawTrim) : "";
   return { id, text: title, url, date: iso, likes: 0, retweets: 0, views: 0 };
 }
 
@@ -284,7 +303,7 @@ function formatTweetMessageHtml(tweet, insight) {
     `<b>🟣 NODZ // CONTENT PIPELINE</b>\n\n` +
     `<b>Nouveau signal sur X</b>\n` +
     `<blockquote>${t}</blockquote>\n` +
-    `🔗 <a href="${u}">Ouvrir le tweet</a>\n\n` +
+    `🔗 <a href="${u}">${preferXLink() ? "Ouvrir sur X" : "Ouvrir sur Nitter"}</a>\n\n` +
     `━━━━━━━━━━━━━━━\n\n` +
     `<b>📊 Métriques</b>\n` +
     `❤️ ${tweet.likes} · 🔁 ${tweet.retweets} · 👁️ ${tweet.views}\n\n` +
