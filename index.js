@@ -7,7 +7,10 @@ const CHAT_ID =
   CHAT_ID_RAW && /^-?\d+$/.test(CHAT_ID_RAW) ? Number(CHAT_ID_RAW) : CHAT_ID_RAW;
 
 // --- X à suivre : https://x.com/Nodz_io — notifications à partir du 25 mars 2026 ---
-const RSS_URL = "https://rsshub.app/twitter/user/Nodz_io";
+// RSS_URL : en prod, surcharges via secret GitHub « RSS_URL ». L’instance publique
+// rsshub.app redirige souvent /twitter/user/* vers une 404 → flux vide sans instance perso.
+const RSS_URL =
+  process.env.RSS_URL?.trim() || "https://rsshub.app/twitter/user/Nodz_io";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
 
 // --- ROADMAP (fichier local en CI = toujours à jour après checkout ; fallback raw GitHub en local sans clone) ---
@@ -119,10 +122,29 @@ async function unpinRoadmapMessage(messageId) {
 
 // ========== TWEETS ==========
 async function getLatestTweet() {
-  const res = await fetch(RSS_URL);
+  const res = await fetch(RSS_URL, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (compatible; NodzBot/1.0; +https://github.com/Valrob28/telegram-x-bot)",
+      Accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8"
+    },
+    redirect: "follow"
+  });
   const text = await res.text();
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  console.log("RSS:", res.status, res.statusText, "type:", ct || "?", "len:", text.length);
+
   const matchItem = text.match(/<item>([\s\S]*?)<\/item>/);
-  if (!matchItem) return null;
+  if (!matchItem) {
+    const flat = text.slice(0, 350).replace(/\s+/g, " ");
+    console.log(
+      "Pas de <item> dans la réponse — souvent rsshub.app public = 404 pour Twitter. " +
+        "Configure le secret GitHub RSS_URL (instance RSSHub avec cookies X, ou autre flux RSS valide). " +
+        "Aperçu:",
+      flat
+    );
+    return null;
+  }
   const item = matchItem[1];
 
   const title = item.match(/<title>(.*?)<\/title>/)?.[1] || "";
@@ -280,6 +302,7 @@ async function main() {
     "PIN_ROADMAP=",
     pinRoadmapEnabled() ? "on" : "off"
   );
+  console.log("RSS_URL =", RSS_URL);
   await processTweets();
   await processRoadmap();
 }

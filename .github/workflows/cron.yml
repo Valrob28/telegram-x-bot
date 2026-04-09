@@ -28,6 +28,8 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           PIN_ROADMAP: "1"
+          # Optionnel : URL d’un flux RSS réel pour @Nodz_io (rsshub.app/public bloque souvent Twitter).
+          RSS_URL: ${{ secrets.RSS_URL }}
 
       - name: Commit tweets.json & roadmap_hash.txt
         run: |
