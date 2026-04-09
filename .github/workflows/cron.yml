@@ -32,6 +32,12 @@ jobs:
           PIN_ROADMAP: "1"
           # Optionnel : URL d’un flux RSS réel pour @Nodz_io (rsshub.app/public bloque souvent Twitter).
           RSS_URL: ${{ secrets.RSS_URL }}
+          # Forum : ID du sujet (nombre) — séparer alertes X vs roadmap.
+          TWEET_TOPIC_ID: ${{ secrets.TWEET_TOPIC_ID }}
+          ROADMAP_TOPIC_ID: ${{ secrets.ROADMAP_TOPIC_ID }}
+          TELEGRAM_TOPIC_ID: ${{ secrets.TELEGRAM_TOPIC_ID }}
+          MONITOR_SINCE_ISO: ${{ secrets.MONITOR_SINCE_ISO }}
+          MAX_TWEETS_PER_RUN: "35"
 
       - name: Commit tweets.json & roadmap_hash.txt
         run: |

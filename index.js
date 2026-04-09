@@ -11,7 +11,15 @@ const CHAT_ID =
 // Défaut : flux RSS nitter.net (remplace rsshub.app/twitter, souvent en 404).
 const RSS_URL =
   process.env.RSS_URL?.trim() || "https://nitter.net/Nodz_io/rss";
-const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
+/** Tweets à notifier à partir de cette date (ISO) — défaut 30 mars 2026. Secret MONITOR_SINCE_ISO pour changer. */
+const MONITOR_SINCE = new Date(
+  process.env.MONITOR_SINCE_ISO?.trim() || "2026-03-30T00:00:00.000Z"
+);
+/** Anti-flood : max de notifications tweet par run (le reste au run suivant). */
+const MAX_TWEETS_PER_RUN = Math.min(
+  80,
+  Math.max(1, parseInt(process.env.MAX_TWEETS_PER_RUN || "35", 10) || 35)
+);
 
 /** Base Nitter pour le lien « Ouvrir le tweet » (secret NITTER_BASE_URL ou déduit de RSS_URL). */
 function getNitterBase() {
@@ -30,6 +38,25 @@ function getNitterBase() {
 
 const preferXLink = () =>
   ["1", "true", "yes"].includes((process.env.TWEET_LINK_PREFER_X || "").toLowerCase());
+
+/** Sujets (forum Telegram) : ID = entier du topic (voir doc Bot API message_thread_id). */
+function parseTopicId(raw) {
+  const v = raw?.trim();
+  if (v && /^\d+$/.test(v)) return parseInt(v, 10);
+  return undefined;
+}
+function topicForTweets() {
+  return (
+    parseTopicId(process.env.TWEET_TOPIC_ID) ??
+    parseTopicId(process.env.TELEGRAM_TOPIC_ID)
+  );
+}
+function topicForRoadmap() {
+  return (
+    parseTopicId(process.env.ROADMAP_TOPIC_ID) ??
+    parseTopicId(process.env.TELEGRAM_TOPIC_ID)
+  );
+}
 
 // --- ROADMAP (fichier local en CI = toujours à jour après checkout ; fallback raw GitHub en local sans clone) ---
 const ROADMAP_FILE = "ROADMAP.md";
@@ -89,7 +116,7 @@ function saveTweets(tweets) {
 
 /**
  * @param {string} message
- * @param {{ parse_mode?: "HTML"; disable_web_page_preview?: boolean }} [opts]
+ * @param {{ parse_mode?: "HTML"; disable_web_page_preview?: boolean; message_thread_id?: number }} [opts]
  */
 async function sendTelegram(message, opts = {}) {
   if (!TELEGRAM_TOKEN) {
@@ -104,9 +131,16 @@ async function sendTelegram(message, opts = {}) {
       message.slice(0, TELEGRAM_MAX_MESSAGE - 40) + "\n\n<i>… (message tronqué, limite Telegram)</i>";
   }
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const threadPart =
+    opts.message_thread_id != null &&
+    typeof opts.message_thread_id === "number" &&
+    opts.message_thread_id > 0
+      ? { message_thread_id: opts.message_thread_id }
+      : {};
   const buildBody = (cid) => ({
     chat_id: cid,
     text: message,
+    ...threadPart,
     ...(opts.parse_mode && { parse_mode: opts.parse_mode }),
     ...(opts.disable_web_page_preview !== undefined && {
       disable_web_page_preview: opts.disable_web_page_preview
@@ -178,15 +212,21 @@ async function telegramApi(method, extra = {}) {
 
 /** Épingle le message (le bot doit être admin avec « épingler les messages »). */
 async function pinRoadmapMessage(messageId) {
+  const tid = topicForRoadmap();
   await telegramApi("pinChatMessage", {
     message_id: messageId,
-    disable_notification: true
+    disable_notification: true,
+    ...(tid != null ? { message_thread_id: tid } : {})
   });
   console.log("Roadmap épinglée, message_id:", messageId);
 }
 
 async function unpinRoadmapMessage(messageId) {
-  await telegramApi("unpinChatMessage", { message_id: messageId });
+  const tid = topicForRoadmap();
+  await telegramApi("unpinChatMessage", {
+    message_id: messageId,
+    ...(tid != null ? { message_thread_id: tid } : {})
+  });
   console.log("Ancienne roadmap désépinglée, message_id:", messageId);
 }
 
@@ -221,11 +261,7 @@ function itemToTweet(titleRaw, linkRaw, dateRaw) {
   return { id, text: title, url, date: iso, likes: 0, retweets: 0, views: 0 };
 }
 
-/** Premier <item> (RSS 2.0, ex. Nitter en RSS). */
-function parseFirstRssItem(xml) {
-  const m = xml.match(/<item>([\s\S]*?)<\/item>/);
-  if (!m) return null;
-  const item = m[1];
+function tweetFromRssItemInner(item) {
   const title = item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "";
   const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || "";
   const pubDate =
@@ -236,13 +272,20 @@ function parseFirstRssItem(xml) {
   return itemToTweet(title, link, pubDate);
 }
 
-/** Premier <entry> (Atom, certains agrégateurs / variantes). */
-function parseFirstAtomEntry(xml) {
-  const m = xml.match(/<entry>([\s\S]*?)<\/entry>/);
-  if (!m) return null;
-  const entry = m[1];
+function parseAllRssItems(xml) {
+  const out = [];
+  const re = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const t = tweetFromRssItemInner(m[1]);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function tweetFromAtomEntryInner(entry) {
   const title = entry.match(/<title[^>]*>([\s\S]*?)<\/title>/)?.[1] || "";
-  let link =
+  const link =
     entry.match(/<link[^>]+href="([^"]+)"[^>]*\/>/)?.[1] ||
     entry.match(/<link[^>]+href="([^"]+)"[^>]*>/)?.[1] ||
     entry.match(/<link>([\s\S]*?)<\/link>/)?.[1] ||
@@ -255,10 +298,32 @@ function parseFirstAtomEntry(xml) {
   return itemToTweet(title, link, pub);
 }
 
-async function getLatestTweet() {
+function parseAllAtomEntries(xml) {
+  const out = [];
+  const re = /<entry>([\s\S]*?)<\/entry>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const t = tweetFromAtomEntryInner(m[1]);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+function dedupeAndSortTweets(arr) {
+  const map = new Map();
+  for (const t of arr) map.set(t.id, t);
+  return [...map.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
+function tweetsFromFeedXml(xml) {
+  const rss = parseAllRssItems(xml);
+  if (rss.length > 0) return dedupeAndSortTweets(rss);
+  return dedupeAndSortTweets(parseAllAtomEntries(xml));
+}
+
+async function fetchRssXml() {
   const res = await fetch(RSS_URL, {
     headers: {
-      // nitter.net renvoie souvent un corps vide avec un UA « bot » minimal
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
       Accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8"
@@ -268,21 +333,7 @@ async function getLatestTweet() {
   const text = await res.text();
   const ct = (res.headers.get("content-type") || "").toLowerCase();
   console.log("RSS:", res.status, res.statusText, "type:", ct || "?", "len:", text.length);
-
-  const fromRss = parseFirstRssItem(text);
-  if (fromRss) return fromRss;
-  const fromAtom = parseFirstAtomEntry(text);
-  if (fromAtom) return fromAtom;
-
-  const flat = text.slice(0, 350).replace(/\s+/g, " ");
-  console.log(
-    "Pas de flux RSS/Atom exploitable (<item> ou <entry>). " +
-      "nitter.net peut renvoyer un corps vide ou du HTML (anti-bot) depuis GitHub Actions — " +
-      "définis alors le secret RSS_URL vers une instance qui répond en XML (autre Nitter, RSSHub perso). " +
-      "Aperçu:",
-    flat
-  );
-  return null;
+  return text;
 }
 
 function computeInsight(tweet, tweets) {
@@ -315,28 +366,66 @@ function formatTweetMessageHtml(tweet, insight) {
 
 async function processTweets() {
   const tweets = loadTweets();
-  const latest = await getLatestTweet();
-  if (!latest) return console.log("No tweet found (RSS vide ou format inattendu)");
-  console.log("Latest tweet id from RSS:", latest.id, "date:", latest.date);
-  const exists = tweets.find(t => t.id === latest.id);
-  if (!exists) {
+  let xml;
+  try {
+    xml = await fetchRssXml();
+  } catch (e) {
+    console.error("RSS fetch error:", e.message || e);
+    return;
+  }
+  const sorted = tweetsFromFeedXml(xml);
+  if (sorted.length === 0) {
+    console.log(
+      "Pas de tweets parsés dans le flux. Aperçu:",
+      xml.slice(0, 350).replace(/\s+/g, " ")
+    );
+    return;
+  }
+  console.log(
+    "Items flux:",
+    sorted.length,
+    "| notif depuis:",
+    MONITOR_SINCE.toISOString(),
+    "| max/run:",
+    MAX_TWEETS_PER_RUN,
+    "| topic tweets:",
+    topicForTweets() ?? "(général)"
+  );
+
+  let sentThisRun = 0;
+  const ttid = topicForTweets();
+
+  for (const latest of sorted) {
+    if (tweets.find((t) => t.id === latest.id)) continue;
+
     const tweetTime = new Date(latest.date);
     if (Number.isNaN(tweetTime.getTime()) || tweetTime < MONITOR_SINCE) {
       tweets.push(latest);
       saveTweets(tweets);
-      console.log("Tweet before monitor window, tracked without notify");
-      return;
+      console.log("Tweet", latest.id, "hors fenêtre — enregistré sans notif");
+      continue;
     }
+
+    if (sentThisRun >= MAX_TWEETS_PER_RUN) {
+      console.log("MAX_TWEETS_PER_RUN atteint — suite au prochain run");
+      break;
+    }
+
     const insight = computeInsight(latest, tweets);
     await sendTelegram(formatTweetMessageHtml(latest, insight), {
       parse_mode: "HTML",
-      disable_web_page_preview: true
+      disable_web_page_preview: true,
+      ...(ttid != null ? { message_thread_id: ttid } : {})
     });
     tweets.push(latest);
     saveTweets(tweets);
-    console.log("New tweet sent");
-  } else {
-    console.log("Already processed (aucun nouvel envoi Telegram pour ce tweet)");
+    sentThisRun++;
+    console.log("Tweet envoyé:", latest.id, latest.date);
+    await new Promise((r) => setTimeout(r, 450));
+  }
+
+  if (sentThisRun === 0) {
+    console.log("Aucun nouveau tweet à notifier (déjà vus ou quota/ordonnancement)");
   }
 }
 
@@ -388,9 +477,11 @@ async function processRoadmap() {
     if (body.length > budget) {
       body = body.slice(0, Math.max(0, budget - 20)) + "\n…";
     }
+    const rtid = topicForRoadmap();
     const messageId = await sendTelegram(header + body + footer, {
       parse_mode: "HTML",
-      disable_web_page_preview: false
+      disable_web_page_preview: false,
+      ...(rtid != null ? { message_thread_id: rtid } : {})
     });
     fs.writeFileSync(ROADMAP_HASH_FILE, hash);
     console.log("Roadmap sent");
@@ -433,6 +524,12 @@ async function main() {
     pinRoadmapEnabled() ? "on" : "off"
   );
   console.log("RSS_URL =", RSS_URL);
+  console.log(
+    "Topics — tweets:",
+    topicForTweets() ?? "général",
+    "roadmap:",
+    topicForRoadmap() ?? "général"
+  );
   await processTweets();
   await processRoadmap();
 }
