@@ -39,6 +39,7 @@ jobs:
           git config --global user.email "bot@nodz.io"
           git add tweets.json roadmap_hash.txt
           [ -f roadmap_pin_id.txt ] && git add roadmap_pin_id.txt || true
+          [ -f telegram_chat_id.txt ] && git add telegram_chat_id.txt || true
           git diff --staged --quiet || git commit -m "update tracked tweets & roadmap hash"
           # Évite l’échec si origin/main a avancé (autre run, push manuel) pendant le job
           git pull --rebase origin main

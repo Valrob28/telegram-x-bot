@@ -22,6 +22,27 @@ const TWEETS_FILE = "tweets.json";
 const ROADMAP_HASH_FILE = "roadmap_hash.txt";
 /** Dernier message roadmap épinglé (pour le remplacer au prochain envoi). */
 const ROADMAP_PIN_ID_FILE = "roadmap_pin_id.txt";
+/** Après migration groupe → supergroupe : nouveau chat_id (fichier versionné en CI). */
+const CHAT_ID_STORE_FILE = "telegram_chat_id.txt";
+
+function getEffectiveChatId() {
+  if (fs.existsSync(CHAT_ID_STORE_FILE)) {
+    const stored = fs.readFileSync(CHAT_ID_STORE_FILE, "utf8").trim();
+    if (/^-?\d+$/.test(stored)) return Number(stored);
+  }
+  return CHAT_ID;
+}
+
+function persistMigratedChatId(newId) {
+  fs.writeFileSync(CHAT_ID_STORE_FILE, String(newId));
+  console.log(
+    "Groupe → supergroupe : nouveau CHAT_ID enregistré dans",
+    CHAT_ID_STORE_FILE,
+    "=",
+    newId,
+    "— mets aussi à jour le secret GitHub CHAT_ID pour éviter une double source."
+  );
+}
 
 function repoWebUrl() {
   const gh = process.env.GITHUB_REPOSITORY;
@@ -53,28 +74,43 @@ function saveTweets(tweets) {
  * @param {{ parse_mode?: "HTML"; disable_web_page_preview?: boolean }} [opts]
  */
 async function sendTelegram(message, opts = {}) {
-  if (!TELEGRAM_TOKEN || CHAT_ID === undefined || CHAT_ID === "") {
-    throw new Error("Missing TELEGRAM_TOKEN or CHAT_ID");
+  if (!TELEGRAM_TOKEN) {
+    throw new Error("Missing TELEGRAM_TOKEN");
+  }
+  let chatId = getEffectiveChatId();
+  if (chatId === undefined || chatId === "") {
+    throw new Error("Missing CHAT_ID (secret ou " + CHAT_ID_STORE_FILE + ")");
   }
   if (message.length > TELEGRAM_MAX_MESSAGE) {
     message =
       message.slice(0, TELEGRAM_MAX_MESSAGE - 40) + "\n\n<i>… (message tronqué, limite Telegram)</i>";
   }
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-  const body = {
-    chat_id: CHAT_ID,
+  const buildBody = (cid) => ({
+    chat_id: cid,
     text: message,
     ...(opts.parse_mode && { parse_mode: opts.parse_mode }),
     ...(opts.disable_web_page_preview !== undefined && {
       disable_web_page_preview: opts.disable_web_page_preview
     })
-  };
-  const res = await fetch(url, {
+  });
+  let res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(buildBody(chatId))
   });
-  const data = await res.json().catch(() => ({}));
+  let data = await res.json().catch(() => ({}));
+  if (!data.ok && data.parameters?.migrate_to_chat_id) {
+    const nid = data.parameters.migrate_to_chat_id;
+    persistMigratedChatId(nid);
+    chatId = nid;
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildBody(nid))
+    });
+    data = await res.json().catch(() => ({}));
+  }
   if (!data.ok) {
     console.error("Telegram sendMessage failed:", JSON.stringify(data));
     throw new Error(data.description || `Telegram API error HTTP ${res.status}`);
@@ -90,16 +126,32 @@ function pinRoadmapEnabled() {
 }
 
 async function telegramApi(method, extra = {}) {
-  if (!TELEGRAM_TOKEN || CHAT_ID === undefined || CHAT_ID === "") {
-    throw new Error("Missing TELEGRAM_TOKEN or CHAT_ID");
+  if (!TELEGRAM_TOKEN) {
+    throw new Error("Missing TELEGRAM_TOKEN");
+  }
+  let chatId = getEffectiveChatId();
+  if (chatId === undefined || chatId === "") {
+    throw new Error("Missing CHAT_ID");
   }
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}`;
-  const res = await fetch(url, {
+  const buildBody = (cid) => ({ chat_id: cid, ...extra });
+  let res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: CHAT_ID, ...extra })
+    body: JSON.stringify(buildBody(chatId))
   });
-  const data = await res.json().catch(() => ({}));
+  let data = await res.json().catch(() => ({}));
+  if (!data.ok && data.parameters?.migrate_to_chat_id) {
+    const nid = data.parameters.migrate_to_chat_id;
+    persistMigratedChatId(nid);
+    chatId = nid;
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildBody(nid))
+    });
+    data = await res.json().catch(() => ({}));
+  }
   if (!data.ok) {
     throw new Error(data.description || `${method} failed`);
   }
@@ -352,11 +404,12 @@ async function processRoadmap() {
 
 // ========== MAIN ==========
 async function main() {
+  const cid = getEffectiveChatId();
   console.log(
     "Env: TELEGRAM_TOKEN=",
     TELEGRAM_TOKEN ? "set" : "MISSING",
     "CHAT_ID=",
-    CHAT_ID !== undefined && CHAT_ID !== "" ? "set" : "MISSING",
+    cid !== undefined && cid !== "" ? "set" : "MISSING",
     "PIN_ROADMAP=",
     pinRoadmapEnabled() ? "on" : "off"
   );
