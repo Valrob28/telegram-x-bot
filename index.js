@@ -6,12 +6,11 @@ const CHAT_ID_RAW = process.env.CHAT_ID?.trim();
 const CHAT_ID =
   CHAT_ID_RAW && /^-?\d+$/.test(CHAT_ID_RAW) ? Number(CHAT_ID_RAW) : CHAT_ID_RAW;
 
-// --- X à suivre : https://x.com/Nodz_io — notifications à partir du 25 mars 2026 ---
-// RSS_URL (secret GitHub) : ex. RSSHub self-hosted, ou Nitter https://TON_INSTANCE/Nodz_io/rss
-// (les instances Nitter publiques sont souvent derrière Cloudflare → inutilisables depuis les CI).
-// Défaut rsshub.app/twitter : souvent une 404 publique pour Twitter.
+// --- X à suivre : https://x.com/Nodz_io / front https://nitter.net/Nodz_io —
+// RSS_URL via secret GitHub pour une autre instance : https://INSTANCE/Nodz_io/rss
+// Défaut : flux RSS nitter.net (remplace rsshub.app/twitter, souvent en 404).
 const RSS_URL =
-  process.env.RSS_URL?.trim() || "https://rsshub.app/twitter/user/Nodz_io";
+  process.env.RSS_URL?.trim() || "https://nitter.net/Nodz_io/rss";
 const MONITOR_SINCE = new Date("2026-03-25T00:00:00.000Z");
 
 // --- ROADMAP (fichier local en CI = toujours à jour après checkout ; fallback raw GitHub en local sans clone) ---
@@ -126,15 +125,29 @@ function stripCdata(s) {
   return String(s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim();
 }
 
+/** Affiche x.com dans Telegram même si le flux vient de nitter.* */
+function toPublicXUrl(link) {
+  const s = String(link).split("#")[0];
+  const idM = s.match(/status\/(\d+)/);
+  if (!idM) return link;
+  const h =
+    s.match(/nitter\.[^/]+\/([^/]+)\/status/)?.[1] ||
+    s.match(/x\.com\/([^/]+)\/status/)?.[1] ||
+    s.match(/twitter\.com\/([^/]+)\/status/)?.[1] ||
+    "Nodz_io";
+  return `https://x.com/${h}/status/${idM[1]}`;
+}
+
 function itemToTweet(titleRaw, linkRaw, dateRaw) {
   const title = stripCdata(titleRaw);
-  const link = stripCdata(linkRaw).trim();
+  const linkRawTrim = stripCdata(linkRaw).trim();
   const pubDate = stripCdata(dateRaw);
-  const idMatch = link.match(/status\/(\d+)/);
+  const idMatch = linkRawTrim.match(/status\/(\d+)/);
   const id = idMatch ? idMatch[1] : Date.now().toString();
   const date = pubDate ? new Date(pubDate) : new Date();
   const iso = Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
-  return { id, text: title, url: link, date: iso, likes: 0, retweets: 0, views: 0 };
+  const url = linkRawTrim ? toPublicXUrl(linkRawTrim) : "";
+  return { id, text: title, url, date: iso, likes: 0, retweets: 0, views: 0 };
 }
 
 /** Premier <item> (RSS 2.0, ex. Nitter en RSS). */
@@ -174,8 +187,9 @@ function parseFirstAtomEntry(xml) {
 async function getLatestTweet() {
   const res = await fetch(RSS_URL, {
     headers: {
+      // nitter.net renvoie souvent un corps vide avec un UA « bot » minimal
       "User-Agent":
-        "Mozilla/5.0 (compatible; NodzBot/1.0; +https://github.com/Valrob28/telegram-x-bot)",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
       Accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8"
     },
     redirect: "follow"
@@ -192,9 +206,8 @@ async function getLatestTweet() {
   const flat = text.slice(0, 350).replace(/\s+/g, " ");
   console.log(
     "Pas de flux RSS/Atom exploitable (<item> ou <entry>). " +
-      "rsshub.app/public et beaucoup d’instances Nitter renvoient 404 ou du HTML (Cloudflare). " +
-      "Utilise une RSS_URL qui répond en XML depuis le runner (RSSHub perso, proxy, etc.). " +
-      "Nitter théorique : https://INSTANCE/Nodz_io/rss pour https://x.com/Nodz_io — " +
+      "nitter.net peut renvoyer un corps vide ou du HTML (anti-bot) depuis GitHub Actions — " +
+      "définis alors le secret RSS_URL vers une instance qui répond en XML (autre Nitter, RSSHub perso). " +
       "Aperçu:",
     flat
   );
